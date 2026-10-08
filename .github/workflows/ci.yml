@@ -1,0 +1,35 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Tesseract с русским языком
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-rus
+          tesseract --version | head -1
+
+      - name: Зависимости
+        run: pip install -r requirements.txt pytest
+
+      - name: Тесты
+        run: pytest -q
+
+      - name: Сквозной прогон командной строки
+        run: |
+          python -m oko generate --out /tmp/oko-data --vehicles 3
+          python -m oko eval --engine tesseract --data /tmp/oko-data --split all --variants clean --limit 3 --results /tmp/oko-results
+          python -m oko db-fill --data /tmp/oko-data --db /tmp/oko.db
+          python -m oko search "машины новее 2010 года" --db /tmp/oko.db
