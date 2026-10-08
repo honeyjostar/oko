@@ -1,0 +1,12 @@
+# ядро
+pillow>=10.0
+numpy>=1.26
+opencv-python-headless>=4.9
+faker==40.41.0          # версия закреплена: от неё зависят имена и адреса в наборе
+rapidfuzz>=3.6
+requests>=2.31
+pytesseract>=0.3.10
+# отчёт и демо
+matplotlib>=3.8
+pandas>=2.1
+streamlit>=1.50

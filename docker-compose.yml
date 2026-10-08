@@ -1,0 +1,37 @@
+# Только демо (модель — в LM Studio на этом же компьютере):
+#     docker compose up
+# Демо + модель в Ollama внутри Docker (нужна видеокарта NVIDIA и NVIDIA Container Toolkit):
+#     docker compose --profile vlm up -d
+#     docker compose exec ollama ollama pull qwen3-vl:8b
+#     OKO_VLM_URL=http://ollama:11434/v1 docker compose --profile vlm up
+
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      OKO_VLM_URL: ${OKO_VLM_URL:-http://host.docker.internal:1234/v1}
+      OKO_VLM_MODEL: ${OKO_VLM_MODEL:-qwen3-vl-8b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data:/app/data
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["vlm"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama:
