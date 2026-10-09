@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import math
 import random
-from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -24,9 +23,15 @@ FONT_DIR = Path(__file__).parent / "fonts"
 Box = tuple[int, int, int, int]
 
 
-@lru_cache(maxsize=128)
+# Уже загруженные шрифты: чтобы не читать файл шрифта с диска на каждую надпись.
+FONTS = {}
+
+
 def font(name: str, size: int) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(FONT_DIR / name), size)
+    key = (name, size)
+    if key not in FONTS:
+        FONTS[key] = ImageFont.truetype(str(FONT_DIR / name), size)
+    return FONTS[key]
 
 
 LABEL_FONT = "DejaVuSansCondensed.ttf"
