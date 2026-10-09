@@ -13,10 +13,8 @@ from __future__ import annotations
 import json
 import re
 import statistics
-import threading
 import zlib
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image
@@ -81,28 +79,18 @@ def run(engine: Engine, data_dir: str | Path, items: list[Item], variants: list[
     check_meta(path.parent, data_dir, write=True)
     done = {(r["id"], r["variant"]) for r in load_records(path)}
     todo = [(it, v) for v in variants for it in items if (it.id, v) not in done]
-    lock = threading.Lock()
-    counter = {"n": 0}
-
-    def one(task):
-        it, v = task
+    # Документы обрабатываются по одному; параметр workers оставлен, чтобы не менять вызовы.
+    n = 0
+    for it, v in todo:
         res = engine.extract(variant_image(data_dir, it, v))
         rec = {"id": it.id, "variant": v, "doc_type": it.doc_type, "pred_doc_type": res.doc_type,
                "fields": res.fields, "seconds": round(res.seconds, 3), "error": res.error}
-        with lock:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-            counter["n"] += 1
-            if progress:
-                progress(counter["n"], len(todo))
-        return rec
-
-    if workers <= 1:
-        for t in todo:
-            one(t)
-    else:
-        with ThreadPoolExecutor(workers) as ex:
-            list(ex.map(one, todo))
+        # Каждый результат сразу дописывается в файл: прерванный прогон можно продолжить.
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        n += 1
+        if progress:
+            progress(n, len(todo))
     return load_records(path)
 
 
