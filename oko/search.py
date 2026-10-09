@@ -70,55 +70,111 @@ def _num(s: str) -> int:
     return int(s.replace(" ", ""))
 
 
+def _take(q: str, pattern: str):
+    """Ищет в запросе все куски, подходящие под шаблон. Возвращает найденное и запрос без этих кусков."""
+    found = list(re.finditer(pattern, q))
+    q = re.sub(pattern, " ", q)
+    return found, q
+
+
+def _find_color(w: str):
+    """Цвет по началу слова: «белые», «белую» → БЕЛЫЙ."""
+    for stem, val in COLORS:
+        if w.startswith(stem) and len(w) <= len(stem) + 6:
+            return val
+    return None
+
+
+def _find_brand(w: str):
+    """Марка или модель по русскому названию: «тойоты», «солярисы» — тоже подходят."""
+    for k, v in BRANDS.items():
+        if w == k:
+            return v
+        if len(k) >= 4 and w.startswith(k[:-1]) and len(w) <= len(k) + 2:
+            return v
+    return None
+
+
 def parse_rules(text: str, store: Store | None = None) -> tuple[list[Cond], list[str]]:
     """Разбор запроса правилами. Возвращает условия и слова, которые не удалось понять."""
     q = text.lower().replace("ё", "е")
     q = re.sub(r"[«»\"!?]", " ", q)
     conds: list[Cond] = []
-    used: list[str] = []   # куски текста, которые уже превратились в условия
-
-    def take(pattern: str, fn):
-        nonlocal q
-        for m in list(re.finditer(pattern, q)):
-            fn(m)
-            used.append(m.group(0))
-        q = re.sub(pattern, " ", q)
+    # Каждое правило: найти кусок запроса по шаблону, сделать из него условие, вырезать кусок из запроса.
+    # Порядок важен: сначала длинные формулировки («с 2015 по 2018»), потом короткие («2015»).
 
     yr = r"((?:19|20)\d{2})"
-    take(rf"\b(?:с|от)\s+{yr}\s*(?:года?|г\.?)?\s*(?:по|до|-|–)\s*{yr}\s*(?:годов|года?|г\.?)?",
-         lambda m: conds.append(Cond("year", "between", (int(m.group(1)), int(m.group(2))))))
-    take(rf"{yr}\s*[-–]\s*{yr}\s*(?:годов|года?|г\.?)?",
-         lambda m: conds.append(Cond("year", "between", (int(m.group(1)), int(m.group(2))))))
-    take(rf"\bне\s+старше\s+{yr}\s*(?:года?|г\.?)?", lambda m: conds.append(Cond("year", ">=", int(m.group(1)))))
-    take(rf"\b(?:новее|после|позже|моложе)\s+{yr}\s*(?:года?|г\.?)?", lambda m: conds.append(Cond("year", ">", int(m.group(1)))))
-    take(rf"\b(?:старше|до|раньше)\s+{yr}\s*(?:года?|г\.?)?", lambda m: conds.append(Cond("year", "<", int(m.group(1)))))
-    take(rf"\b(?:с|от)\s+{yr}\s*(?:года?|г\.?)?", lambda m: conds.append(Cond("year", ">=", int(m.group(1)))))
-    take(rf"(?<!\d){yr}\s*(?:года?|г\.?|выпуска)?(?!\d)", lambda m: conds.append(Cond("year", "=", int(m.group(1)))))
 
+    # годы диапазоном: «с 2015 по 2018», «2015-2018»
+    range_rules = [
+        rf"\b(?:с|от)\s+{yr}\s*(?:года?|г\.?)?\s*(?:по|до|-|–)\s*{yr}\s*(?:годов|года?|г\.?)?",
+        rf"{yr}\s*[-–]\s*{yr}\s*(?:годов|года?|г\.?)?",
+    ]
+    for pattern in range_rules:
+        found, q = _take(q, pattern)
+        for m in found:
+            conds.append(Cond("year", "between", (int(m.group(1)), int(m.group(2)))))
+
+    # один год: (шаблон, операция)
+    year_rules = [
+        (rf"\bне\s+старше\s+{yr}\s*(?:года?|г\.?)?", ">="),
+        (rf"\b(?:новее|после|позже|моложе)\s+{yr}\s*(?:года?|г\.?)?", ">"),
+        (rf"\b(?:старше|до|раньше)\s+{yr}\s*(?:года?|г\.?)?", "<"),
+        (rf"\b(?:с|от)\s+{yr}\s*(?:года?|г\.?)?", ">="),
+        (rf"(?<!\d){yr}\s*(?:года?|г\.?|выпуска)?(?!\d)", "="),
+    ]
+    for pattern, op in year_rules:
+        found, q = _take(q, pattern)
+        for m in found:
+            conds.append(Cond("year", op, int(m.group(1))))
+
+    # мощность: (шаблон, операция)
     hp = r"(\d{2,3})\s*(?:л\.?\s*с\.?|лс|лошад\w*|сил\w*)"
-    take(rf"\b(?:мощнее|больше|более|свыше|от)\s+{hp}", lambda m: conds.append(Cond("power_hp", ">", _num(m.group(1)))))
-    take(rf"\b(?:слабее|меньше|менее|до)\s+{hp}", lambda m: conds.append(Cond("power_hp", "<", _num(m.group(1)))))
-    take(rf"{hp}", lambda m: conds.append(Cond("power_hp", "=", _num(m.group(1)))))
+    power_rules = [
+        (rf"\b(?:мощнее|больше|более|свыше|от)\s+{hp}", ">"),
+        (rf"\b(?:слабее|меньше|менее|до)\s+{hp}", "<"),
+        (rf"{hp}", "="),
+    ]
+    for pattern, op in power_rules:
+        found, q = _take(q, pattern)
+        for m in found:
+            conds.append(Cond("power_hp", op, _num(m.group(1))))
 
-    def volume(m):
+    # объём в литрах: «1.6» → от 1540 до 1660 см³
+    found, q = _take(q, r"(\d[.,]\d)\s*(?:л\b|литр\w*|объем\w*)?")
+    for m in found:
         liters = float(m.group(1).replace(",", "."))
         conds.append(Cond("engine_volume", "between", (int(liters * 1000 - 60), int(liters * 1000 + 60))))
-    take(r"(\d[.,]\d)\s*(?:л\b|литр\w*|объем\w*)?", volume)
 
-    take(r"дизел\w*", lambda m: conds.append(Cond("engine_type", "like", "ДИЗЕЛ")))
-    take(r"бензин\w*", lambda m: conds.append(Cond("engine_type", "like", "БЕНЗИН")))
-    take(r"(?:\bс\s+)?\b(?:эптс|электронн\w+\s+(?:птс|паспорт\w*))", lambda m: conds.append(Cond("pts_number", "len", 15)))
-    take(r"(?:\bс\s+)?\bбумажн\w+\s+(?:птс|паспорт\w*)", lambda m: conds.append(Cond("pts_number", "len", 10)))
-    take(r"(?:евро|экокласс\w*|экологическ\w+\s+класс\w*)[\s-]*(5|пят\w*)", lambda m: conds.append(Cond("eco_class", "=", "ПЯТЫЙ")))
-    take(r"(?:евро|экокласс\w*|экологическ\w+\s+класс\w*)[\s-]*(4|четверт\w*)", lambda m: conds.append(Cond("eco_class", "=", "ЧЕТВЕРТЫЙ")))
+    # слова с готовым значением: (шаблон, колонка, операция, значение)
+    word_rules = [
+        (r"дизел\w*", "engine_type", "like", "ДИЗЕЛ"),
+        (r"бензин\w*", "engine_type", "like", "БЕНЗИН"),
+        (r"(?:\bс\s+)?\b(?:эптс|электронн\w+\s+(?:птс|паспорт\w*))", "pts_number", "len", 15),
+        (r"(?:\bс\s+)?\bбумажн\w+\s+(?:птс|паспорт\w*)", "pts_number", "len", 10),
+        (r"(?:евро|экокласс\w*|экологическ\w+\s+класс\w*)[\s-]*(5|пят\w*)", "eco_class", "=", "ПЯТЫЙ"),
+        (r"(?:евро|экокласс\w*|экологическ\w+\s+класс\w*)[\s-]*(4|четверт\w*)", "eco_class", "=", "ЧЕТВЕРТЫЙ"),
+    ]
+    for pattern, column, op, value in word_rules:
+        found, q = _take(q, pattern)
+        for m in found:
+            conds.append(Cond(column, op, value))
 
     # госномер целиком или кусок: «а123вс», «номер 123»
-    take(r"\b[авекмнорстух]\d{3}[авекмнорстух]{2}\d{2,3}\b",
-         lambda m: conds.append(Cond("plate", "=", canon("plate", m.group(0)))))
-    take(r"(?:номер|госномер|гос\.?\s*номер)\s+([авекмнорстух]?\d{3}[авекмнорстух]{0,2})",
-         lambda m: conds.append(Cond("plate", "like", canon("plate", m.group(1)))))
-    take(r"\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{17}\b", lambda m: conds.append(Cond("vin", "=", canon("vin", m.group(0)))))
-    take(r"\bvin\s+([a-hj-npr-z0-9]{4,16})\b", lambda m: conds.append(Cond("vin", "like", canon("vin", m.group(1)))))
+    found, q = _take(q, r"\b[авекмнорстух]\d{3}[авекмнорстух]{2}\d{2,3}\b")
+    for m in found:
+        conds.append(Cond("plate", "=", canon("plate", m.group(0))))
+    found, q = _take(q, r"(?:номер|госномер|гос\.?\s*номер)\s+([авекмнорстух]?\d{3}[авекмнорстух]{0,2})")
+    for m in found:
+        conds.append(Cond("plate", "like", canon("plate", m.group(1))))
+
+    # VIN целиком (17 знаков) или кусок после слова «vin»
+    found, q = _take(q, r"\b(?=[a-z0-9]*\d)(?=[a-z0-9]*[a-z])[a-z0-9]{17}\b")
+    for m in found:
+        conds.append(Cond("vin", "=", canon("vin", m.group(0))))
+    found, q = _take(q, r"\bvin\s+([a-hj-npr-z0-9]{4,16})\b")
+    for m in found:
+        conds.append(Cond("vin", "like", canon("vin", m.group(1))))
 
     words = re.findall(r"[a-zа-я0-9][a-zа-я0-9\-]*", q)
     rest: list[str] = []
@@ -135,12 +191,11 @@ def parse_rules(text: str, store: Store | None = None) -> tuple[list[Cond], list
         if w in skip:
             continue
         # цвет проверяем раньше марки: «черные» — это цвет, а не CHERY
-        color = next((val for stem, val in COLORS if w.startswith(stem) and len(w) <= len(stem) + 6), None)
+        color = _find_color(w)
         if color and not (color == "СЕРЫЙ" and w.startswith("серг")):
             conds.append(Cond("color", "=", color))
             continue
-        brand = next((v for k, v in BRANDS.items()
-                      if w == k or (len(k) >= 4 and w.startswith(k[:-1]) and len(w) <= len(k) + 2)), None)
+        brand = _find_brand(w)
         if brand:                                   # «тойоты», «солярисы» — тоже марка
             conds.append(Cond("make_model", "like", brand))
             continue
